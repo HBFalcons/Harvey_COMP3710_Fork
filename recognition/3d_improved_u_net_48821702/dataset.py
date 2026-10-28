@@ -5,6 +5,12 @@ import os
 import re
 from collections import defaultdict
 
+import nibabel as nib
+import numpy as np
+import torch
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+
 # ---------------------------------------------------------------------------
 # Dataset constants
 # ---------------------------------------------------------------------------
@@ -113,3 +119,107 @@ def volumes_for_split(data_root, split_name, split=None):
     patients = set(split[split_name])
     volumes = find_volumes(data_root)
     return [volumes[key] for key in sorted(volumes) if key[0] in patients]
+
+
+# ---------------------------------------------------------------------------
+# Loading and pre-processing
+# ---------------------------------------------------------------------------
+EXPECTED_SHAPE_2D = (256, 128)
+EXPECTED_SHAPE_3D = (256, 256, 128)
+
+
+def load_nifti(path, ndim):
+    """Load a NIfTI file as a float32 NumPy array with exactly `ndim` dimensions.
+
+    Some HipMRI files carry an extra trailing dimension; it is dropped here.
+    Adapted from load_data_2D / load_data_3D in the COMP3710 task sheet (Appendix B).
+    """
+    data = nib.load(path).get_fdata(caching='unchanged')
+    while data.ndim > ndim:
+        data = data[..., 0]
+    return data.astype(np.float32)
+
+
+def normalise(image):
+    """Z-score normalisation: zero mean and unit variance over the whole image/volume."""
+    return (image - image.mean()) / (image.std() + 1e-8)
+
+
+def load_pair(image_path, label_path, ndim, expected_shape):
+    """Load an image and its label map, normalise the image and check alignment.
+
+    Returns:
+        image: float32 tensor of shape (1, *expected_shape)  -- single input channel
+        label: int64 tensor of shape expected_shape with class indices 0..NUM_CLASSES-1
+    """
+    image = load_nifti(image_path, ndim)
+    label = np.rint(load_nifti(label_path, ndim)).astype(np.int64)
+    if image.shape != expected_shape or label.shape != expected_shape:
+        raise ValueError(f'Unexpected shape {image.shape} / {label.shape} for {image_path}')
+    return torch.from_numpy(normalise(image)).unsqueeze(0), torch.from_numpy(label)
+
+
+def to_one_hot(labels, num_classes=NUM_CLASSES):
+    """Convert class-index labels (B, *spatial) into one-hot channels (B, C, *spatial).
+
+    Done on the GPU inside training/evaluation rather than in the Dataset, because a
+    one-hot 3D mask is ~6x larger than the integer label map.
+    """
+    return F.one_hot(labels, num_classes).movedim(-1, 1).float()
+
+
+# ---------------------------------------------------------------------------
+# PyTorch datasets
+# ---------------------------------------------------------------------------
+class HipMRISlices2D(Dataset):
+    """2D coronal slices from keras_slices_data, one slice per item (for the 2D U-Net)."""
+
+    def __init__(self, data_root, split_name):
+        cases = find_slices(data_root, split_name)
+        # Flatten to a list of (case_key, slice_index, image_path, mask_path), in a fixed order
+        self.items = [(key, idx, img, msk)
+                      for key in sorted(cases)
+                      for idx, img, msk in cases[key]]
+
+    def __len__(self):
+        return len(self.items)
+
+    def __getitem__(self, i):
+        _, _, image_path, mask_path = self.items[i]
+        return load_pair(image_path, mask_path, ndim=2, expected_shape=EXPECTED_SHAPE_2D)
+
+
+class HipMRIVolumes3D(Dataset):
+    """Full 3D MR volumes with their label volumes, one volume per item (for the 3D model)."""
+
+    def __init__(self, data_root, split_name, split=None):
+        self.pairs = volumes_for_split(data_root, split_name, split)
+
+    def __len__(self):
+        return len(self.pairs)
+
+    def __getitem__(self, i):
+        image_path, label_path = self.pairs[i]
+        return load_pair(image_path, label_path, ndim=3, expected_shape=EXPECTED_SHAPE_3D)
+
+
+def get_dataloader(data_root, split_name, mode, batch_size, num_workers=4):
+    """Build a DataLoader for one split.
+
+    mode: '2d' for single slices, '3d' for whole volumes.
+    Only the training split is shuffled; validation/test keep a fixed order.
+    """
+    if mode == '2d':
+        dataset = HipMRISlices2D(data_root, split_name)
+    elif mode == '3d':
+        dataset = HipMRIVolumes3D(data_root, split_name)
+    else:
+        raise ValueError(f"mode must be '2d' or '3d', got {mode!r}")
+
+    is_train = split_name == 'train'
+    return DataLoader(dataset,
+                      batch_size=batch_size,
+                      shuffle=is_train,
+                      drop_last=is_train,
+                      num_workers=num_workers,
+                      pin_memory=torch.cuda.is_available())
