@@ -1,0 +1,2 @@
+# Data loading, splitting, and augmentation for the HipMRI dataset
+# Based on dataset, splitting is done at the patient level, so that all slices from a given patient are either in the training or validation set.

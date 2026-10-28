@@ -1,0 +1,16 @@
+# Data (never commit; access via Rangpur or Google Drive)
+*.nii
+*.nii.gz
+*.tar
+data/
+
+# Model weights and outputs
+*.pt
+*.pth
+checkpoints/
+outputs/
+
+# Python / notebook clutter
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
