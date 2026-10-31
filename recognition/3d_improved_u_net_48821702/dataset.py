@@ -175,6 +175,7 @@ def load_data_2D(imageNames, normImage=False, categorical=False, dtype=np.float3
         affine = niftiImage.affine
         if len(inImage.shape) == 3:
             inImage = inImage[:, :, 0]  # sometimes extra dims in HipMRI_study data
+        inImage = inImage[:, :cols]  # ADDED: clip slices to the first case's width, mirroring load_data_3D
         inImage = inImage.astype(dtype)
         if normImage:
             inImage = (inImage - inImage.mean()) / (inImage.std() + 1e-8)
