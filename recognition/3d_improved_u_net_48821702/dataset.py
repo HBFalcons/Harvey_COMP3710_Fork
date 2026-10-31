@@ -8,6 +8,7 @@ import nibabel as nib
 import numpy as np
 import torch
 import torch.nn.functional as F
+from tqdm import tqdm
 from collections import defaultdict
 from torch.utils.data import Dataset, DataLoader
 
