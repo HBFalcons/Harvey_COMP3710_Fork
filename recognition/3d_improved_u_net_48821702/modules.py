@@ -5,6 +5,7 @@ import torch.nn as nn
 
 # ---------------------------------------------------------------------------
 # 2D U-Net baseline inspired by Ronneberger et al. (2015) reference in task sheet
+# Commit Note: Passed smoke test for correct number of parameters across channels, and input/output shapes match correctly
 # ---------------------------------------------------------------------------
 class DoubleConv2D(nn.Module):
     """Two 3x3 convolutions, each followed by batch normalisation and ReLU.
