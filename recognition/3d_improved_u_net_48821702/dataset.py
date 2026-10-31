@@ -124,71 +124,164 @@ def volumes_for_split(data_root, split_name, split=None):
 
 
 # ---------------------------------------------------------------------------
-# Loading and pre-processing
+# NIfTI loading - as per the COMP3710 task sheet
+# Only change being removing unused 'orient' and 'interp' variables
+# In current, pipeline use, no issues with functions performance
 # ---------------------------------------------------------------------------
 EXPECTED_SHAPE_2D = (256, 128)
 EXPECTED_SHAPE_3D = (256, 256, 128)
 
 
-def load_nifti(path, ndim):
-    """Load a NIfTI file as a float32 NumPy array with exactly `ndim` dimensions.
+def to_channels(arr: np.ndarray, dtype=np.uint8) -> np.ndarray:
+    channels = np.unique(arr)
+    res = np.zeros(arr.shape + (len(channels),), dtype=dtype)
+    for c in channels:
+        c = int(c)
+        res[..., c:c+1][arr == c] = 1
 
-    Some HipMRI files carry an extra trailing dimension; it is dropped here.
-    Adapted from load_data_2D / load_data_3D in the COMP3710 task sheet (Appendix B).
-    """
-    data = nib.load(path).get_fdata(caching='unchanged')
-    while data.ndim > ndim:
-        data = data[..., 0]
-    return data.astype(np.float32)
+    return res
 
 
-def normalise(image):
-    """Z-score normalisation: zero mean and unit variance over the whole image/volume."""
-    return (image - image.mean()) / (image.std() + 1e-8)
+# load medical image functions
+def load_data_2D(imageNames, normImage=False, categorical=False, dtype=np.float32,
+                 getAffines=False, early_stop=False):
+    '''
+    Load medical image data from names, cases list provided into a list for each.
+
+    This function pre-allocates 4D arrays for conv2d to avoid excessive memory usage.
+
+    normImage: bool (normalise the image 0.0-1.0)
+    early_stop: Stop loading pre-maturely, leaves arrays mostly empty, for quick loading and testing scripts.
+    '''
+    affines = []
+
+    # get fixed size
+    num = len(imageNames)
+    first_case = nib.load(imageNames[0]).get_fdata(caching='unchanged')
+    if len(first_case.shape) == 3:
+        first_case = first_case[:, :, 0]  # sometimes extra dims, remove
+    if categorical:
+        first_case = to_channels(first_case, dtype=dtype)
+        rows, cols, channels = first_case.shape
+        images = np.zeros((num, rows, cols, channels), dtype=dtype)
+    else:
+        rows, cols = first_case.shape
+        images = np.zeros((num, rows, cols), dtype=dtype)
+
+    for i, inName in enumerate(tqdm(imageNames)):
+        niftiImage = nib.load(inName)
+        inImage = niftiImage.get_fdata(caching='unchanged')  # read disk only
+        affine = niftiImage.affine
+        if len(inImage.shape) == 3:
+            inImage = inImage[:, :, 0]  # sometimes extra dims in HipMRI_study data
+        inImage = inImage.astype(dtype)
+        if normImage:
+            inImage = (inImage - inImage.mean()) / (inImage.std() + 1e-8)
+        if categorical:
+            inImage = to_channels(inImage, dtype=dtype)
+            images[i, :, :, :] = inImage
+        else:
+            images[i, :, :] = inImage
+
+        affines.append(affine)
+        if i > 20 and early_stop:
+            break
+
+    if getAffines:
+        return images, affines
+    else:
+        return images
 
 
-def load_pair(image_path, label_path, ndim, expected_shape):
-    """Load an image and its label map, normalise the image and check alignment.
+def load_data_3D(imageNames, normImage=False, categorical=False, dtype=np.float32,
+                 getAffines=False, early_stop=False):
+    '''
+    Load medical image data from names, cases list provided into a list for each.
 
-    Returns:
-        image: float32 tensor of shape (1, *expected_shape)  -- single input channel
-        label: int64 tensor of shape expected_shape with class indices 0..NUM_CLASSES-1
-    """
-    image = load_nifti(image_path, ndim)
-    label = np.rint(load_nifti(label_path, ndim)).astype(np.int64)
-    if image.shape != expected_shape or label.shape != expected_shape:
-        raise ValueError(f'Unexpected shape {image.shape} / {label.shape} for {image_path}')
-    return torch.from_numpy(normalise(image)).unsqueeze(0), torch.from_numpy(label)
+    This function pre-allocates 5D arrays for conv3d to avoid excessive memory usage.
+
+    normImage: bool (normalise the image 0.0-1.0)
+    dtype: Type of the data. If dtype=np.uint8, it is assumed that the data is labels
+    early_stop: Stop loading pre-maturely? Leaves arrays mostly empty, for quick loading and testing scripts.
+    '''
+    affines = []
+
+    # get fixed size
+    num = len(imageNames)
+    niftiImage = nib.load(imageNames[0])
+    first_case = niftiImage.get_fdata(caching='unchanged')
+    if len(first_case.shape) == 4:
+        first_case = first_case[:, :, :, 0]  # sometimes extra dims, remove
+    if categorical:
+        first_case = to_channels(first_case, dtype=dtype)
+        rows, cols, depth, channels = first_case.shape
+        images = np.zeros((num, rows, cols, depth, channels), dtype=dtype)
+    else:
+        rows, cols, depth = first_case.shape
+        images = np.zeros((num, rows, cols, depth), dtype=dtype)
+
+    for i, inName in enumerate(tqdm(imageNames)):
+        niftiImage = nib.load(inName)
+        inImage = niftiImage.get_fdata(caching='unchanged')  # read disk only
+        affine = niftiImage.affine
+        if len(inImage.shape) == 4:
+            inImage = inImage[:, :, :, 0]  # sometimes extra dims in HipMRI_study data
+        inImage = inImage[:, :, :depth]  # clip slices
+        inImage = inImage.astype(dtype)
+        if normImage:
+            inImage = (inImage - inImage.mean()) / (inImage.std() + 1e-8)
+        if categorical:
+            inImage = to_channels(inImage, dtype=dtype)
+            images[i, :inImage.shape[0], :inImage.shape[1], :inImage.shape[2], :] = inImage
+        else:
+            images[i, :inImage.shape[0], :inImage.shape[1], :inImage.shape[2]] = inImage
+
+        affines.append(affine)
+        if i > 20 and early_stop:
+            break
+
+    if getAffines:
+        return images, affines
+    else:
+        return images
 
 
 def to_one_hot(labels, num_classes=NUM_CLASSES):
     """Convert class-index labels (B, *spatial) into one-hot channels (B, C, *spatial).
 
-    Done on the GPU inside training/evaluation rather than in the Dataset, because a
-    one-hot 3D mask is ~6x larger than the integer label map.
+    Done on the GPU inside training/evaluation rather than at load time: it always
+    produces num_classes channels (unlike to_channels above), and pre-loading one-hot
+    3D labels would need ~6x more memory than integer label maps.
     """
     return F.one_hot(labels, num_classes).movedim(-1, 1).float()
 
 
 # ---------------------------------------------------------------------------
-# PyTorch datasets
+# PyTorch datasets (each split is pre-loaded into memory with the loaders above)
 # ---------------------------------------------------------------------------
 class HipMRISlices2D(Dataset):
     """2D coronal slices from keras_slices_data, one slice per item (for the 2D U-Net)."""
 
     def __init__(self, data_root, split_name):
         cases = find_slices(data_root, split_name)
-        # Flatten to a list of (case_key, slice_index, image_path, mask_path), in a fixed order
+        # Flatten to (case_key, slice_index, image_path, mask_path) in a fixed order,
+        # so item i can always be traced back to its patient, week and slice
         self.items = [(key, idx, img, msk)
                       for key in sorted(cases)
                       for idx, img, msk in cases[key]]
+        # normImage=True applies z-score normalisation (despite the "0.0-1.0" docstring)
+        self.images = load_data_2D([img for _, _, img, _ in self.items], normImage=True)
+        self.labels = load_data_2D([msk for _, _, _, msk in self.items], dtype=np.uint8)
+        if self.images.shape[1:] != EXPECTED_SHAPE_2D:
+            raise ValueError(f'Unexpected 2D slice shape {self.images.shape[1:]}')
 
     def __len__(self):
         return len(self.items)
 
     def __getitem__(self, i):
-        _, _, image_path, mask_path = self.items[i]
-        return load_pair(image_path, mask_path, ndim=2, expected_shape=EXPECTED_SHAPE_2D)
+        image = torch.from_numpy(self.images[i]).unsqueeze(0)  # (1, H, W)
+        label = torch.from_numpy(self.labels[i]).long()        # (H, W), values 0..5
+        return image, label
 
 
 class HipMRIVolumes3D(Dataset):
@@ -196,13 +289,19 @@ class HipMRIVolumes3D(Dataset):
 
     def __init__(self, data_root, split_name, split=None):
         self.pairs = volumes_for_split(data_root, split_name, split)
+        # normImage=True applies z-score normalisation (despite the "0.0-1.0" docstring)
+        self.images = load_data_3D([img for img, _ in self.pairs], normImage=True)
+        self.labels = load_data_3D([lab for _, lab in self.pairs], dtype=np.uint8)
+        if self.images.shape[1:] != EXPECTED_SHAPE_3D:
+            raise ValueError(f'Unexpected 3D volume shape {self.images.shape[1:]}')
 
     def __len__(self):
         return len(self.pairs)
 
     def __getitem__(self, i):
-        image_path, label_path = self.pairs[i]
-        return load_pair(image_path, label_path, ndim=3, expected_shape=EXPECTED_SHAPE_3D)
+        image = torch.from_numpy(self.images[i]).unsqueeze(0)  # (1, D, H, W)
+        label = torch.from_numpy(self.labels[i]).long()        # (D, H, W), values 0..5
+        return image, label
 
 
 def get_dataloader(data_root, split_name, mode, batch_size, num_workers=4):
@@ -225,84 +324,3 @@ def get_dataloader(data_root, split_name, mode, batch_size, num_workers=4):
                       drop_last=is_train,
                       num_workers=num_workers,
                       pin_memory=torch.cuda.is_available())
-
-
-# ---------------------------------------------------------------------------
-# Data augmentation (applied on the GPU to whole training batches)
-# ---------------------------------------------------------------------------
-# Physical voxel spacing (mm) of each spatial axis, so rotations are true rotations
-# in millimetres rather than in stretched voxel coordinates. The 2D slice headers
-# report 1 mm, but the slices are cut from the 3D volumes, so their real spacing
-# is (left-right, superior-inferior) = (1.68, 1.56).
-SPACING_2D = (1.6796875, 1.5600052)
-SPACING_3D = (1.6796875, 1.6796875, 1.5600052)
-
-
-def _rotation_matrices(angles):
-    """Build rotation matrices from angles in radians.
-
-    angles: (N, 1) for 2D or (N, 3) for 3D (one angle per axis).
-    Returns: (N, 2, 2) or (N, 3, 3).
-    """
-    n, device = angles.shape[0], angles.device
-    if angles.shape[1] == 1:
-        c, s = torch.cos(angles[:, 0]), torch.sin(angles[:, 0])
-        return torch.stack([torch.stack([c, -s], -1), torch.stack([s, c], -1)], -2)
-
-    rotation = torch.eye(3, device=device).repeat(n, 1, 1)
-    for axis in range(3):
-        c, s = torch.cos(angles[:, axis]), torch.sin(angles[:, axis])
-        i, j = [a for a in range(3) if a != axis]
-        r = torch.eye(3, device=device).repeat(n, 1, 1)
-        r[:, i, i], r[:, i, j], r[:, j, i], r[:, j, j] = c, -s, s, c
-        rotation = r @ rotation
-    return rotation
-
-
-def augment_batch(images, labels, spacing, max_rotation_deg=10.0, scale_range=(0.9, 1.1),
-                  p_affine=0.5, p_flip=0.5, p_intensity=0.5, noise_std=0.05):
-    """Randomly augment a training batch on whatever device it is on.
-
-    images: (N, 1, *spatial) float, labels: (N, *spatial) int64, for 2D or 3D data.
-    Each sample independently gets, with the given probabilities:
-      1. a small random rotation and isotropic scaling (same transform for image and labels)
-      2. a left-right flip -- the pelvis is roughly symmetric, so this is plausible. No
-         anterior-posterior or superior-inferior flips: the rectum always lies behind the
-         prostate and the bladder above it.
-      3. random contrast, brightness and Gaussian noise (image only)
-    """
-    n, dims, device = images.shape[0], images.dim() - 2, images.device
-    view = lambda t, extra: t.view(-1, *[1] * extra)  # reshape (N,) for broadcasting
-
-    # 1. Rotation + scaling via an affine resampling grid
-    apply = (torch.rand(n, device=device) < p_affine).float()
-    n_angles = 1 if dims == 2 else 3
-    angles = (torch.rand(n, n_angles, device=device) * 2 - 1) \
-        * math.radians(max_rotation_deg) * apply[:, None]
-    scales = 1 + (torch.empty(n, device=device).uniform_(*scale_range) - 1) * apply
-
-    # affine_grid uses normalised [-1, 1] coordinates ordered (x = last dim, y, z),
-    # so convert to millimetres, rotate/scale there, then convert back.
-    half_extent = torch.tensor([size * sp / 2 for size, sp in zip(images.shape[2:], spacing)][::-1],
-                               device=device)
-    matrix = torch.diag(1 / half_extent) @ _rotation_matrices(angles) @ torch.diag(half_extent)
-    matrix = matrix / scales[:, None, None]
-    theta = torch.cat([matrix, torch.zeros(n, dims, 1, device=device)], dim=2)
-    grid = F.affine_grid(theta, images.shape, align_corners=False)
-
-    images = F.grid_sample(images, grid, mode='bilinear', padding_mode='border', align_corners=False)
-    labels = F.grid_sample(labels.unsqueeze(1).float(), grid, mode='nearest',
-                           padding_mode='zeros', align_corners=False).squeeze(1).long()
-
-    # 2. Left-right flip (spatial dim 0 is the L-R axis in both the 2D and 3D tensors)
-    flip = torch.rand(n, device=device) < p_flip
-    images = torch.where(view(flip, dims + 1), images.flip(2), images)
-    labels = torch.where(view(flip, dims), labels.flip(1), labels)
-
-    # 3. Intensity: contrast, brightness and noise (images only)
-    apply = view((torch.rand(n, device=device) < p_intensity).float(), dims + 1)
-    contrast = 1 + (torch.rand_like(apply) * 0.2 - 0.1) * apply
-    brightness = (torch.rand_like(apply) * 0.2 - 0.1) * apply
-    images = images * contrast + brightness + torch.randn_like(images) * noise_std * apply
-
-    return images, labels
