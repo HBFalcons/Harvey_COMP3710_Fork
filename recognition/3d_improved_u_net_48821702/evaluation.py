@@ -67,6 +67,24 @@ def predict_case_2d(model, case_slices, device, use_amp):
     pred = pred.cpu().numpy().astype(np.uint8)
     return restack(pred), restack(images), restack(masks), seconds
 
+@torch.no_grad()
+def predict_case_3d(model, image_path, device, use_amp):
+    """Segment one whole 3D volume.
+
+    Returns (pred_volume, image_volume, inference_seconds), each volume (D, H, W).
+    """
+    image = dataset.load_data_3D([image_path], normImage=True)[0]  # z-scored as in training
+    x = torch.from_numpy(image)[None, None].to(device)  # (1, 1, D, H, W)
+    if device.type == 'cuda':
+        torch.cuda.synchronize()
+    start = time.time()
+    with torch.autocast(device.type, dtype=torch.bfloat16, enabled=use_amp):
+        pred = model(x).argmax(dim=1)[0]
+    if device.type == 'cuda':
+        torch.cuda.synchronize()
+    seconds = time.time() - start
+    return pred.cpu().numpy().astype(np.uint8), image, seconds
+
 
 def load_label_volume(path):
     """3D label volume as uint8, plus its voxel spacing (mm) from the NIfTI header."""
@@ -121,8 +139,9 @@ def main():
     slab = slice(dataset.SLAB_START, dataset.SLAB_START + dataset.SLAB_SIZE)
 
     # Warm-up pass so the first case's timing excludes one-off GPU start-up costs
+    warmup_shape = dataset.EXPECTED_SHAPE_2D if mode == '2d' else dataset.EXPECTED_SHAPE_3D
     with torch.no_grad(), torch.autocast(device.type, dtype=torch.bfloat16, enabled=use_amp):
-        model(torch.zeros(1, 1, *dataset.EXPECTED_SHAPE_2D, device=device))
+        model(torch.zeros(1, 1, *warmup_shape, device=device))
 
     rows, profile_rows = [], []
     for key in sorted(volumes):
@@ -130,6 +149,7 @@ def main():
         gt, spacing = load_label_volume(volumes[key][1])
         gt_slab = gt[:, slab, :]
 
+        full_metrics, pred_full = {}, None
         if mode == '2d':
             pred_slab, image_slab, gt_from_2d, seconds = predict_case_2d(
                 model, case_slices[key], device, use_amp)
@@ -137,10 +157,15 @@ def main():
             if not np.array_equal(gt_from_2d, gt_slab):
                 raise RuntimeError(f'Restacked 2D masks do not match the 3D labels for {case}')
         else:
-            raise NotImplementedError('3D evaluation is added with the 3D model (milestone 8)')
+            pred_full, image_full, seconds = predict_case_3d(model, volumes[key][0], device, use_amp)
+            # Primary comparison: the same slab the 2D model covers
+            pred_slab, image_slab = pred_full[:, slab, :], image_full[:, slab, :]
+            # Secondary: the whole volume, which only the 3D model covers
+            full, _ = utils.volume_metrics(pred_full, gt, spacing)
+            full_metrics = {f'full_{k}': v for k, v in full.items()}
 
         metrics, (z, slice_dice, relative) = utils.volume_metrics(pred_slab, gt_slab, spacing)
-        rows.append({'case': case, **metrics, 'inference_s': seconds})
+        rows.append({'case': case, **metrics, **full_metrics, 'inference_s': seconds})
         profile_rows += [{'case': case, 'slice': int(i), 'relative_position': float(r), 'dice': float(d)}
                          for i, d, r in zip(z, slice_dice, relative)]
         print(f'{case} | prostate Dice {metrics["dice_prostate"]:.3f} | '
@@ -150,9 +175,10 @@ def main():
 
         if not args.no_save_predictions:
             os.makedirs(os.path.join(args.out_dir, 'predictions'), exist_ok=True)
+            extra = {'pred_full': pred_full} if pred_full is not None else {}
             np.savez_compressed(os.path.join(args.out_dir, 'predictions', f'{case}.npz'),
                                 pred=pred_slab, gt=gt_slab, image=image_slab.astype(np.float16),
-                                spacing=np.array(spacing))
+                                spacing=np.array(spacing), **extra)
 
     # Save per-case metrics, the slice profile and a summary
     write_csv(os.path.join(args.out_dir, 'per_volume.csv'), rows)

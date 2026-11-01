@@ -26,7 +26,14 @@ import dataset
 import modules
 import utils
 
-MODES = {'unet2d': '2d'}  # model name -> data mode; the 3D model is added in milestone 8
+MODES = {'unet2d': '2d', 'improved_unet3d': '3d'}  # model name -> data mode
+
+# Per-model defaults, used when the corresponding flag is not given on the command line
+MODEL_DEFAULTS = {
+    'unet2d':          {'base_channels': 64, 'lr': 1e-3, 'batch_size': 16, 'epochs': 50},
+    'improved_unet3d': {'base_channels': 16, 'lr': 5e-4, 'batch_size': 2,  'epochs': 150},
+}
+
 SPACING = {'2d': dataset.SPACING_2D, '3d': dataset.SPACING_3D}
 
 
@@ -36,17 +43,22 @@ def parse_args():
     parser.add_argument('--model', choices=sorted(MODES), default='unet2d')
     parser.add_argument('--data_dir', required=True, help='path to HipMRI_Study_open')
     parser.add_argument('--out_dir', required=True, help='where checkpoints, logs and plots are saved')
-    parser.add_argument('--epochs', type=int, default=50)
-    parser.add_argument('--batch_size', type=int, default=16)
-    parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--epochs', type=int, default=None, help='default depends on --model')
+    parser.add_argument('--batch_size', type=int, default=None, help='default depends on --model')
+    parser.add_argument('--lr', type=float, default=None, help='default depends on --model')
+    parser.add_argument('--base_channels', type=int, default=None, help='default depends on --model')
     parser.add_argument('--weight_decay', type=float, default=1e-5)
-    parser.add_argument('--base_channels', type=int, default=64)
     parser.add_argument('--num_workers', type=int, default=4)
     parser.add_argument('--no_amp', action='store_true', help='disable bfloat16 mixed precision')
     parser.add_argument('--no_augment', action='store_true', help='disable training augmentation')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--resume', action='store_true', help='continue from out_dir/last.pt')
-    return parser.parse_args()
+
+    args = parser.parse_args()
+    for key, value in MODEL_DEFAULTS[args.model].items():
+        if getattr(args, key) is None:
+            setattr(args, key, value)
+    return args
 
 
 def set_seed(seed):
@@ -61,6 +73,9 @@ def build_model(name, base_channels):
     if name == 'unet2d':
         return modules.UNet2D(in_channels=1, num_classes=dataset.NUM_CLASSES,
                               base_channels=base_channels)
+    if name == 'improved_unet3d':
+        return modules.ImprovedUNet3D(in_channels=1, num_classes=dataset.NUM_CLASSES,
+                                      base_channels=base_channels)
     raise ValueError(f'Unknown model {name!r}')
 
 
