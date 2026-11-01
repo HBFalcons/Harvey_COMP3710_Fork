@@ -2,6 +2,7 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 # ---------------------------------------------------------------------------
 # 2D U-Net baseline inspired by Ronneberger et al. (2015) reference in task sheet
@@ -80,3 +81,46 @@ class UNet2D(nn.Module):
             x = decoder(torch.cat([skip, x], dim=1))
 
         return self.head(x)
+
+
+
+# ---------------------------------------------------------------------------
+# Loss function
+# ---------------------------------------------------------------------------
+class DiceCELoss(nn.Module):
+    """Cross-entropy plus soft Dice loss for multi-class segmentation.
+
+    - Cross-entropy gives stable per-pixel gradients
+    - Soft Dice measures overlap per class
+    - Dice is computed over the whole batch
+
+    Args:
+        num_classes:        number of classes, inc. background (class 0)
+        include_background: include class 0 in the Dice average
+        smooth:             small constant that avoids division by zero
+    """
+
+    def __init__(self, num_classes, include_background=False, smooth=1e-5,
+                 ce_weight=1.0, dice_weight=1.0):
+        super().__init__()
+        self.num_classes = num_classes
+        self.include_background = include_background
+        self.smooth = smooth
+        self.ce_weight = ce_weight
+        self.dice_weight = dice_weight
+
+    def forward(self, logits, labels):
+        """logits: (N, C, *spatial) raw scores; labels: (N, *spatial) class indices."""
+        logits = logits.float() 
+        ce = F.cross_entropy(logits, labels)
+
+        probs = logits.softmax(dim=1)
+        target = F.one_hot(labels, self.num_classes).movedim(-1, 1).float()
+        sum_dims = (0,) + tuple(range(2, logits.dim()))  # sum over batch and all spatial dims
+        intersection = (probs * target).sum(sum_dims)
+        denominator = probs.sum(sum_dims) + target.sum(sum_dims)
+        dice = (2 * intersection + self.smooth) / (denominator + self.smooth)  # one score per class
+
+        if not self.include_background:
+            dice = dice[1:]
+        return self.ce_weight * ce + self.dice_weight * (1 - dice.mean())
