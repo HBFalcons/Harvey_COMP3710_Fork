@@ -125,8 +125,10 @@ def volume_metrics(pred, gt, spacing):
     metrics['hd95_prostate_mm'] = hd95(p, g, spacing)
     metrics['base_error_mm'], metrics['apex_error_mm'] = extent_errors(p, g, spacing[2])
     metrics['prostate_components'] = int(ndimage.label(p)[1])
+    metrics['rectum_in_prostate_ml'] = float(((pred == RECTUM) & g).sum() * voxel_ml)
     metrics['prostate_in_rectum_ml'] = float((p & (gt == RECTUM)).sum() * voxel_ml)
     metrics['prostate_in_bladder_ml'] = float((p & (gt == BLADDER)).sum() * voxel_ml)
     metrics['missed_prostate_ml'] = float((g & ~p).sum() * voxel_ml)
     metrics['extra_prostate_ml'] = float((p & ~g).sum() * voxel_ml)
+    
     return metrics, slice_dice_profile(p, g)

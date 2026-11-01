@@ -5,7 +5,7 @@ into the 3D slab (axis-1 indices SLAB_START .. SLAB_START + SLAB_SIZE - 1), so 2
 models are scored against the same 3D ground truth with the same metrics.
 
 Example:
-    python evaluate.py --checkpoint /path/to/unet2d/best.pt \
+    python evaluation.py --checkpoint /path/to/unet2d/best.pt \
         --data_dir /path/to/HipMRI_Study_open --out_dir /path/to/eval/unet2d
 """
 import argparse
