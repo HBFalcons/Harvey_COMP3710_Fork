@@ -1,0 +1,16 @@
+Profiling unet2d ...
+Profiling improved_unet3d ...
+
+GPU: NVIDIA A100-SXM4-40GB | PyTorch 2.11.0+cu130 | bfloat16 autocast
+
+| Metric | 2D U-Net | 3D Improved U-Net |
+|---|---|---|
+| Parameters | 31,036,806 | 9,464,674 |
+| Checkpoint size (MB) | 124.2 | 37.9 |
+| Training batch | 16 slices | 2 volumes |
+| Peak training VRAM, allocated / reserved (GB) | 2.03 / 2.40 | 16.17 / 22.88 |
+| Training step time (ms) | 39.0 ± 0.1 | 473.5 ± 0.1 |
+| Epoch time (s) | 31.4 | 51.0 |
+| Epochs / total training time (min) | 50 / 26 | 150 / 128 |
+| Peak inference VRAM per scan, allocated / reserved (GB) | 2.43 / 2.99 | 3.24 / 4.41 |
+| Inference latency per scan (ms) | 31.4 ± 0.0 | 131.8 ± 0.1 |
