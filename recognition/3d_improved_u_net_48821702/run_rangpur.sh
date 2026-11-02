@@ -5,10 +5,9 @@
 #   sbatch run_rangpur.sh improved_unet3d              # full 3D model
 #   sbatch run_rangpur.sh unet2d ./outputs/test --epochs 1   # quick test run
 #SBATCH --job-name=hipmri_seg
-#SBATCH --partition=a100           # check available GPU partitions with `sinfo`
+#SBATCH --partition=comp3710           # check available GPU partitions with `sinfo`
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=48G                  # the 3D training split is pre-loaded into RAM (~8 GB)
 #SBATCH --time=04:00:00
 #SBATCH --output=%x_%j.out         # log file in the submission folder
 
