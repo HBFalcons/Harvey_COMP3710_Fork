@@ -16,8 +16,9 @@ MODEL=${1:-unet2d}
 OUT_DIR=${2:-./outputs/$MODEL}
 DATA_DIR=/home/groups/comp3710/HipMRI_Study_open
 
-# Activate an environment with requirements.txt installed, e.g.:
-# conda activate comp3710
+# Activate the environment with requirements.txt installed
+eval "$(conda shell.bash hook)"
+conda activate comp3710
 
 python train.py --model "$MODEL" --data_dir "$DATA_DIR" --out_dir "$OUT_DIR" "${@:3}"
 python evaluation.py --checkpoint "$OUT_DIR/best.pt" --data_dir "$DATA_DIR" --out_dir "$OUT_DIR/eval"
