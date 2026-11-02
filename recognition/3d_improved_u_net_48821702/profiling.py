@@ -77,3 +77,104 @@ def profile_model(name, repeats, warmup, device):
 
     def train_step():
         optimizer.zero_grad(set_to_none=True)
+        with torch.autocast('cuda', dtype=torch.bfloat16):
+            logits = model(x)
+        criterion(logits, y).backward()
+        optimizer.step()
+
+    model.train()
+    train_step()  # creates the Adam state, so it is included in the measured memory
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+    result['train_step_s'] = timed(train_step, repeats, warmup)
+    result['train_peak_allocated_gb'], result['train_peak_reserved_gb'] = peak_gb()
+
+    # --- Inference on one whole scan ---
+    del x, y, optimizer
+    model.zero_grad(set_to_none=True)
+    model.eval()
+    scan = torch.randn(INPUTS_PER_SCAN[mode], 1, *shape, device=device)
+
+    @torch.no_grad()
+    def infer():
+        with torch.autocast('cuda', dtype=torch.bfloat16):
+            model(scan).argmax(dim=1)
+
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+    result['inference_per_scan_s'] = timed(infer, repeats, warmup)
+    result['inference_peak_allocated_gb'], result['inference_peak_reserved_gb'] = peak_gb()
+
+    del model, scan
+    torch.cuda.empty_cache()
+    return result
+
+
+def add_training_history(result, ckpt_root):
+    """Actual training time and checkpoint size from the real training run, if available."""
+    run_dir = os.path.join(ckpt_root, result['model'])
+    history_path = os.path.join(run_dir, 'history.json')
+    if os.path.exists(history_path):
+        with open(history_path) as f:
+            epoch_times = json.load(f)['epoch_time']
+        result['epochs'] = len(epoch_times)
+        result['epoch_time_s'] = (statistics.mean(epoch_times), statistics.stdev(epoch_times))
+        result['total_training_min'] = sum(epoch_times) / 60
+    best_path = os.path.join(run_dir, 'best.pt')
+    if os.path.exists(best_path):
+        result['checkpoint_mb'] = os.path.getsize(best_path) / 1e6
+
+
+def markdown_table(results):
+    """Format the results as a GitHub Markdown table for the README."""
+    def ms(pair):
+        return f'{pair[0] * 1000:.1f} ± {pair[1] * 1000:.1f}'
+
+    rows = [
+        ('Parameters', lambda r: f'{r["parameters"]:,}'),
+        ('Checkpoint size (MB)', lambda r: f'{r["checkpoint_mb"]:.1f}' if 'checkpoint_mb' in r else '-'),
+        ('Training batch', lambda r: f'{r["train_batch_size"]} {"slices" if r["inputs_per_scan"] > 1 else "volumes"}'),
+        ('Peak training VRAM, allocated / reserved (GB)',
+         lambda r: f'{r["train_peak_allocated_gb"]:.2f} / {r["train_peak_reserved_gb"]:.2f}'),
+        ('Training step time (ms)', lambda r: ms(r['train_step_s'])),
+        ('Epoch time (s)', lambda r: f'{r["epoch_time_s"][0]:.1f}' if 'epoch_time_s' in r else '-'),
+        ('Epochs / total training time (min)',
+         lambda r: f'{r["epochs"]} / {r["total_training_min"]:.0f}' if 'epochs' in r else '-'),
+        ('Peak inference VRAM per scan, allocated / reserved (GB)',
+         lambda r: f'{r["inference_peak_allocated_gb"]:.2f} / {r["inference_peak_reserved_gb"]:.2f}'),
+        ('Inference latency per scan (ms)', lambda r: ms(r['inference_per_scan_s'])),
+    ]
+    header = '| Metric | ' + ' | '.join(LABELS.get(r['model'], r['model']) for r in results) + ' |'
+    divider = '|---|' + '---|' * len(results)
+    body = ['| ' + label + ' | ' + ' | '.join(fmt(r) for r in results) + ' |' for label, fmt in rows]
+    return '\n'.join([header, divider] + body)
+
+
+def main():
+    args = parse_args()
+    if not torch.cuda.is_available():
+        raise SystemExit('Profiling requires a CUDA GPU')
+    device = torch.device('cuda')
+    os.makedirs(args.out_dir, exist_ok=True)
+
+    results = []
+    for name in args.models:
+        print(f'Profiling {name} ...', flush=True)
+        result = profile_model(name, args.repeats, args.warmup, device)
+        if args.ckpt_root:
+            add_training_history(result, args.ckpt_root)
+        results.append(result)
+
+    info = {'gpu': torch.cuda.get_device_name(0), 'torch': torch.__version__,
+            'precision': 'bfloat16 autocast', 'repeats': args.repeats, 'warmup': args.warmup}
+    with open(os.path.join(args.out_dir, 'profiling.json'), 'w') as f:
+        json.dump({'info': info, 'results': results}, f, indent=1)
+    table = markdown_table(results)
+    with open(os.path.join(args.out_dir, 'profiling_table.md'), 'w') as f:
+        f.write(table + '\n')
+    print(f'\nGPU: {info["gpu"]} | PyTorch {info["torch"]} | {info["precision"]}\n')
+    print(table)
+
+
+if __name__ == '__main__':
+    main()
